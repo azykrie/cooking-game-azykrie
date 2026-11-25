@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Culinary Solstice</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: #0f1117; overflow: hidden;
+      font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+    #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  </style>
+</head>
+<body>
+  <canvas id="game" aria-label="Culinary Solstice cooking game"></canvas>
+  <p id="status" role="status" aria-live="polite"></p>
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
