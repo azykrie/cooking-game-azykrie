@@ -1,123 +1,176 @@
-// The game's rules and state, with no drawing and no browser in it: the kitchen counter, the
-// order board, the active dish and the ingredients on the plate, the serve timer, and the screen
-// the game is on. step() advances one fixed step and returns what happened as bit flags, so the
-// caller can react without knowing about screens or sound. Everything is static files under game/.
+// The rules of the kitchen, kept free of drawing and DOM code. One order is active at a time;
+// the player picks ingredients onto a plate, then serves. A plate is correct when its set of
+// ingredients is exactly what the active ticket asks for. Speed and streaks pay a bonus,
+// mistakes cost a heart and three seconds, and five served tickets finish the shift.
 import {
-  INGREDIENTS, KITCHEN, ORDERS,
-  PLATE_STAGE, SERVE_TIME,
+  BASE_POINTS, INGREDIENTS, ORDERS, SHIFT_LENGTH,
+  START_HEARTS, TIME_BONUS, WRONG_PENALTY_SECONDS,
 } from './config.js';
 
-export const SCREEN_TITLE = 'title';
-export const SCREEN_COOK = 'cook';
-export const SCREEN_PAUSED = 'paused';
-export const SCREEN_SERVED = 'served';
+export const TITLE = 'title';
+export const COOK = 'cook';
+export const SERVED = 'served';
+export const FINAL = 'final';
 
-export const EVENT_SERVE = 1; // the serve timer reached zero on the active dish
+const byId = (list, id) => list.find((item) => item.id === id) ?? null;
 
-/** The ingredient ids each dish needs, in the order they are recommended. */
-const DISH_INGREDIENTS = {
-  omega: ['protein', 'sauce', 'herbs'],
-  empress: ['rice', 'herbs', 'veg'],
-  hermit: ['veg', 'rice', 'herbs'],
-};
-
-/** A real, original idea of the dish: what each ingredient is used for. */
-const DISH_META = {
-  omega: { label: 'Teriyaki Fish', chef: 'Chef Nori', note: 'Searing fish in soy-brown sauce with fresh herbs.' },
-  empress: { label: 'Saffron Rice', chef: 'Chef Iku', note: 'Steamed rice toasted with saffron and a touch of greens.' },
-  hermit: { label: 'Herb Green', chef: 'Chef Mara', note: 'A leafy green plated with herbs and a light herb sauce.' },
-};
-
-function ingredientId(id) {
-  return INGREDIENTS.find((item) => item.id === id) ?? null;
+function sameSet(a, b) {
+  return a.length === b.length && a.every((value) => b.includes(value));
 }
 
-export function createGame(random) {
-  const activeOrder = ORDERS[0]; // Omega starts as the active dish
+export function createGame() {
   const state = {
-    screen: SCREEN_TITLE,
+    screen: TITLE,
+    orderId: ORDERS[0].id,
+    orderNumber: 1,
+    servedCount: 0,
+    score: 0,
+    combo: 0,
+    bestCombo: 0,
+    hearts: START_HEARTS,
+    plated: [],
+    timer: ORDERS[0].time,
+    maxTimer: ORDERS[0].time,
+    feedback: null,
+    result: null,
     best: 0,
-    selectedId: null, // which ingredient tile is selected
-    dishId: activeOrder.id,
-    dishLabel: activeOrder.label,
-    plated: [], // ingredient ids placed on the plate, in order
-    timer: SERVE_TIME, // seconds left on the serve timer
-    served: false,
-    order: activeOrder,
-    meta: DISH_META[activeOrder.id],
   };
 
-  function reset() {
-    state.screen = SCREEN_TITLE;
-    state.best = 0;
-    state.selectedId = null;
-    state.dishId = activeOrder.id;
-    state.dishLabel = activeOrder.label;
-    state.plated = [];
-    state.timer = SERVE_TIME;
-    state.served = false;
-    state.order = activeOrder;
-    state.meta = DISH_META[activeOrder.id];
+  function order() {
+    return byId(ORDERS, state.orderId) ?? ORDERS[0];
   }
 
-  /**
-   * One fixed step. `direction` is -1, 0 or 1 (left/right on the counter or board).
-   * With `harmless` set (the title screen's backdrop) things animate but nothing is eaten.
-   */
-  function step(dt, direction, harmless) {
-    if (state.screen === SCREEN_COOK) {
-      if (harmless) return 0;
+  function say(text, kind) {
+    state.feedback = { text, kind, ttl: 2.4 };
+  }
+
+  function loadOrder(index) {
+    const next = ORDERS[index % ORDERS.length];
+    state.orderId = next.id;
+    state.maxTimer = next.time;
+    state.timer = next.time;
+    state.plated = [];
+    state.feedback = null;
+    state.result = null;
+  }
+
+  function start() {
+    state.screen = COOK;
+    state.servedCount = 0;
+    state.score = 0;
+    state.combo = 0;
+    state.bestCombo = 0;
+    state.hearts = START_HEARTS;
+    state.orderNumber = 1;
+    loadOrder(0);
+  }
+
+  function reset() {
+    state.screen = TITLE;
+    state.feedback = null;
+    state.result = null;
+    state.plated = [];
+  }
+
+  function selectOrder(id) {
+    if (state.screen !== COOK) return false;
+    const picked = byId(ORDERS, id);
+    if (!picked) return false;
+    if (picked.id === state.orderId) return false;
+    state.orderId = picked.id;
+    state.maxTimer = picked.time;
+    state.timer = picked.time;
+    state.plated = [];
+    say(`${picked.label} selected — read the ticket.`, 'info');
+    return true;
+  }
+
+  function addIngredient(id) {
+    if (state.screen !== COOK) return false;
+    if (!byId(INGREDIENTS, id)) return false;
+    if (state.plated.includes(id)) {
+      say('That ingredient is already on the plate.', 'info');
+      return false;
+    }
+    if (state.plated.length >= 5) {
+      say('The plate is full — undo or serve it.', 'bad');
+      return false;
+    }
+    state.plated.push(id);
+    const ing = byId(INGREDIENTS, id);
+    say(`${ing.label} added to the plate.`, 'info');
+    return true;
+  }
+
+  function undo() {
+    if (state.screen !== COOK || state.plated.length === 0) return false;
+    const id = state.plated.pop();
+    say(`${byId(INGREDIENTS, id).label} taken off.`, 'info');
+    return true;
+  }
+
+  function fail(message) {
+    state.hearts -= 1;
+    state.combo = 0;
+    state.plated = [];
+    state.timer = Math.max(1, state.timer - WRONG_PENALTY_SECONDS);
+    say(message, 'bad');
+    if (state.hearts <= 0) state.screen = FINAL;
+  }
+
+  function serve() {
+    if (state.screen !== COOK) return null;
+    const ticket = order();
+    if (state.plated.length === 0) {
+      say('An empty plate does not serve a dish.', 'bad');
+      return null;
+    }
+    if (!sameSet(state.plated, ticket.needs)) {
+      fail('Wrong plate — compare it with the ticket.');
+      return { perfect: false, gained: 0, ticket };
+    }
+
+    const multiplier = 1 + Math.min(state.combo, 4) * 0.25;
+    const speed = Math.ceil(state.timer) * TIME_BONUS;
+    const gained = Math.round((BASE_POINTS + speed) * multiplier);
+    state.combo += 1;
+    state.bestCombo = Math.max(state.bestCombo, state.combo);
+    state.score += gained;
+    state.servedCount += 1;
+    state.result = { perfect: true, gained, speed, multiplier, ticket };
+    state.screen = SERVED;
+    state.feedback = null;
+    return state.result;
+  }
+
+  function next() {
+    if (state.screen !== SERVED) return;
+    if (state.servedCount >= SHIFT_LENGTH) {
+      state.screen = FINAL;
+      return;
+    }
+    state.orderNumber += 1;
+    loadOrder(state.orderNumber - 1);
+    state.screen = COOK;
+  }
+
+  function tick(dt) {
+    if (state.screen === COOK) {
       state.timer -= dt;
       if (state.timer <= 0) {
-        state.timer = 0;
-        state.served = true;
-        if (state.screen !== SCREEN_SERVED) state.screen = SCREEN_SERVED;
-        return EVENT_SERVE;
+        state.timer = state.maxTimer;
+        fail(`${order().label} timed out — the ticket was lost.`);
       }
-      return 0;
     }
-    return 0;
+    if (state.feedback) {
+      state.feedback.ttl -= dt;
+      if (state.feedback.ttl <= 0) state.feedback = null;
+    }
   }
 
-  function resetCook() {
-    state.screen = SCREEN_COOK;
-    state.selectedId = null;
-    state.plated = [];
-    state.timer = SERVE_TIME;
-    state.served = false;
+  function snapshotRecipe() {
+    return { ticket: order(), plated: [...state.plated] };
   }
 
-  /** Pick an order for the active dish. */
-  function chooseOrder(id) {
-    const order = ORDERS.find((item) => item.id === id);
-    if (!order) return false;
-    state.dishId = order.id;
-    state.dishLabel = order.label;
-    state.order = order;
-    state.meta = DISH_META[order.id];
-    return true;
-  }
-
-  /** Mark an ingredient as placed on the plate (only if it is not already there). */
-  function placeIngredient(id) {
-    if (state.screen !== SCREEN_COOK) return false;
-    const exist = state.plated.includes(id);
-    if (exist) return false;
-    const item = ingredientId(id);
-    if (!item) return false;
-    state.plated.push(id);
-    if (state.selectedId !== id) state.selectedId = id;
-    return true;
-  }
-
-  /** Un-plate an ingredient at the end of the plate. */
-  function unplaceIngredient() {
-    if (state.screen !== SCREEN_COOK) return false;
-    if (state.plated.length === 0) return false;
-    state.plated.pop();
-    return true;
-  }
-
-  reset();
-  return { state, reset, step, resetCook, chooseOrder, placeIngredient, unplaceIngredient };
+  return { state, order, start, reset, selectOrder, addIngredient, undo, serve, next, tick, snapshotRecipe };
 }

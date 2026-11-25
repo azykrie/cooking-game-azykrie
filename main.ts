@@ -1,9 +1,9 @@
-// A working cooking-game-01 entry (Node 22, standard library only): the game is this directory's
-// game/ folder, plain static files a desktop browser loads offline (game/index.html and its ES
-// modules, no library and no network request), and this program hands it in. It copies game/ and
-// screenshots/ from beside this file to /output and writes /output/dossier.json, the summary the
-// judge reads, with the vendored make.fun library. Serve it locally with `node serve.ts`, then
-// open http://localhost:8080. Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:
+// Hand-in for Culinary Solstice. The game itself is plain static files under game/, so a
+// desktop browser loads it offline with no build step and no network request. This Node 22
+// program copies game/ and screenshots/ into /output and writes /output/dossier.json with the
+// kit's vendored makefun-game library. Serve the game with `node serve.ts` and open
+// http://localhost:8080 to play it. Outside the grader's container, MAKEFUN_OUTPUT_DIR stands
+// in for /output:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
 import { cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -11,20 +11,23 @@ import { fileURLToPath } from 'node:url';
 import { buildDossier } from './vendor/makefun-game.ts';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
-const out = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
+const output = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
+const game = join(here, 'game');
+const shots = join(here, 'screenshots');
 
-mkdirSync(out, { recursive: true });
-cpSync(join(here, 'game'), join(out, 'game'), { recursive: true });
-mkdirSync(join(out, 'screenshots'), { recursive: true });
-if (existsSync(join(here, 'screenshots'))) cpSync(join(here, 'screenshots'), join(out, 'screenshots'), { recursive: true });
+if (!existsSync(game)) throw new Error(`missing game directory: ${game}`);
+if (!existsSync(shots)) throw new Error(`missing screenshots directory: ${shots}`);
 
-writeFileSync(
-  join(out, 'dossier.json'),
-  buildDossier(out, {
-    text_max_bytes: 163840,
-    screenshots: { max: 4, max_bytes: 262144 },
-    game_max_files: 993,
-    game_max_bytes: 50331648,
-    game_path_max_bytes: 1000,
-  }),
-);
+mkdirSync(output, { recursive: true });
+cpSync(game, join(output, 'game'), { recursive: true });
+cpSync(shots, join(output, 'screenshots'), { recursive: true });
+
+const dossier = buildDossier(output, {
+  text_max_bytes: 163840,
+  screenshots: { max: 4, max_bytes: 262144 },
+  game_max_files: 993,
+  game_max_bytes: 50331648,
+  game_path_max_bytes: 1000,
+});
+writeFileSync(join(output, 'dossier.json'), dossier);
+console.log(`Culinary Solstice ready: ${output}/game, ${output}/screenshots, ${output}/dossier.json`);

@@ -1,29 +1,16 @@
-// Boot and the one loop: input is read every frame, the kitchen state advances in fixed 1/60 s
-// steps, and the renderer paints what is there. The game moves between the title screen, the cook
-// screen (cooking/plating), the paused state and the served screen.
-//
-// ?shot=title|cook|served (with &seed=N) stages that scene instead of running the loop, paints it
-// once, and sets window.__shotReady for a screenshot: a deterministic, real render of the game's
-// own code, never an edited or borrowed frame.
-import { BEST_KEY } from './config.js';
-import { createGame } from './world.js';
+// Boot, the fixed-step loop and the deterministic ?shot= staging used for the screenshots.
+// No game rules live here: world.js owns the state, render.js paints it, input.js routes events.
+import { BEST_KEY, ORDERS, STEP } from './config.js';
+import { createGame, COOK } from './world.js';
+import { createRenderer } from './render.js';
 import { createInput } from './input.js';
-import { createRenderer, SCREEN_COOK, SCREEN_SERVED, SCREEN_TITLE } from './render.js';
-
-const MAX_FRAME = 0.25;
-const params = new URLSearchParams(window.location.search);
-const shot = params.get('shot');
-const seedParam = Number.parseInt(params.get('seed') ?? '', 10);
-const seed = Number.isInteger(seedParam) ? seedParam : Math.floor(Math.random() * 4294967296);
 
 const canvas = document.getElementById('game');
 const status = document.getElementById('status');
-const world = createGame((() => {
-  let i = 0;
-  return () => i++ % 100;
-})());
-const input = createInput(canvas);
+const world = createGame();
 const renderer = createRenderer(canvas);
+const params = new URLSearchParams(window.location.search);
+const shot = params.get('shot');
 
 function readBest() {
   try {
@@ -32,70 +19,87 @@ function readBest() {
     return 0;
   }
 }
+
 function saveBest(value) {
   try {
     window.localStorage.setItem(BEST_KEY, String(value));
   } catch {
-    // Storage can be off (private windows): the best score then lasts this visit only.
+    // Private windows can refuse storage; the score still lasts this visit.
   }
 }
 
-/** Stage a shot scene, plate the full active dish, paint it, and mark it ready to screenshot. */
-function runShot(name) {
-  const sceneName = name === 'served' ? SCREEN_SERVED : name === 'cook' ? SCREEN_COOK : SCREEN_TITLE;
-  world.state.screen = sceneName;
-  const dish = ['protein', 'sauce', 'herbs', 'rice', 'veg'];
-  for (const id of dish) world.placeIngredient(id);
-  renderer.draw(world.state, sceneName, 0);
+world.state.best = readBest();
+
+function announce() {
+  const s = world.state;
+  if (s.screen === COOK) {
+    status.textContent = `Cooking ${world.order().label}. ${s.plated.length} of ${world.order().needs.length} ingredients plated.`;
+  } else if (s.screen === 'served') {
+    status.textContent = `Order served. ${s.score} points.`;
+  } else if (s.screen === 'title') {
+    status.textContent = 'Culinary Solstice. Press space to start.';
+  }
+}
+
+const handlers = {
+  start() { world.start(); announce(); },
+  next() {
+    if (world.state.score > world.state.best) {
+      world.state.best = world.state.score;
+      saveBest(world.state.best);
+    }
+    world.next();
+    announce();
+  },
+  selectOrder(id) { world.selectOrder(id); announce(); },
+  addIngredient(id) { world.addIngredient(id); announce(); },
+  undo() { world.undo(); announce(); },
+  serve() { world.serve(); announce(); },
+};
+
+createInput(canvas, renderer, handlers, world.state);
+
+/** Put the real game state into a still frame for a screenshot, then mark it ready. */
+function stageShot() {
+  const name = params.get('shot') ?? 'title';
+  const dish = ORDERS.find((order) => order.id === params.get('dish')) ?? ORDERS[0];
+  const count = Math.min(Number.parseInt(params.get('plate') ?? '0', 10) || 0, dish.needs.length);
+  if (name === 'title') {
+    world.reset();
+    world.state.best = Math.max(world.state.best, 1240);
+  } else if (name === 'served') {
+    world.start();
+    world.selectOrder(dish.id);
+    dish.needs.forEach((id) => world.addIngredient(id));
+    world.serve();
+  } else {
+    world.start();
+    world.selectOrder(dish.id);
+    dish.needs.slice(0, count).forEach((id) => world.addIngredient(id));
+    const seconds = Number.parseFloat(params.get('t') ?? '');
+    if (Number.isFinite(seconds)) world.state.timer = seconds;
+    world.state.feedback = null;
+  }
+  renderer.draw(world.state);
   window.__shotReady = true;
   document.title = 'ready';
 }
 
-function runGame() {
-  let screen = SCREEN_TITLE;
-  let best = readBest();
-
-  // Screen readers (and anyone watching the page's text) hear the screen changes and each hit.
-  function announce(message) {
-    status.textContent = message;
-  }
-
-  function startCook() {
-    world.resetCook();
-    const dish = ['protein', 'sauce', 'herbs', 'rice', 'veg'];
-    for (const id of dish) world.placeIngredient(id);
-    screen = SCREEN_COOK;
-    announce('Cooking. Plate the dish, then serve before the timer runs out.');
-  }
-
-  function serve() {
-    if (screen !== SCREEN_COOK) return;
-    world.state.served = true;
-    screen = SCREEN_SERVED;
-    announce('Served.');
-  }
-
+if (shot) {
+  stageShot();
+} else {
+  let last = performance.now();
+  let carry = 0;
   function frame(now) {
-    requestAnimationFrame(frame);
-    if (screen === SCREEN_COOK) {
-      // The cook timer ticks so the scene moves forward over time.
-      world.step(1 / 60, 0, false);
+    carry += Math.min((now - last) / 1000, 0.25);
+    last = now;
+    while (carry >= STEP) {
+      world.tick(STEP);
+      carry -= STEP;
     }
-    renderer.draw(world.state, screen, best);
+    renderer.draw(world.state);
+    requestAnimationFrame(frame);
   }
-
-  // Leaving the tab pauses a running cook rather than letting the timer run unseen.
-  document.addEventListener('visibilitychange', () => {
-    if (document.hidden && screen === SCREEN_COOK) screen = SCREEN_TITLE;
-  });
-
-  announce('Culinary Solstice. Press Space or click to start the game, 1/2/3 to pick a dish.');
-  if (shot) {
-    runShot(shot);
-    return;
-  }
+  announce();
   requestAnimationFrame(frame);
 }
-
-if (shot) runShot(shot);
-else runGame();
